@@ -10,8 +10,7 @@
 */target/
 */lib_managed/
 */src_managed/
-*/project/boot/
-*/project/plugins/project/
+*/project/
 */res/*
 
 # Scala-IDE specific
