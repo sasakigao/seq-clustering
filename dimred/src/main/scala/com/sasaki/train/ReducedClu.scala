@@ -28,7 +28,7 @@ object ReducedClu {
 
 	// Params for column clustering
 	val numTop = 5
-	val k = 5
+	val k = 5                    // 5 seems better
 	val numIterations = 20
 	val numDimKept = 5           // number of dimensions remained each level
 	val initMode = "k-means||"
@@ -38,7 +38,7 @@ object ReducedClu {
 	def main(args: Array[String]) = {
 	  	val confSpark = new SparkConf().setAppName(appName)
 	  	confSpark.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-	  	// confSpark.registerKryoClasses(Array(classOf[Proximity]))
+	  	confSpark.registerKryoClasses(Array(classOf[LabeledSet]))
   		val sc = new SparkContext(confSpark)
 
 		/**
@@ -79,6 +79,7 @@ object ReducedClu {
 
 		/**
 		 * Union step. Keep frepuency and duration.
+		 * Group-level is parallel.
 		 */
 		val aligned: ParSeq[(Int, (RDD[LabeledPoint], Int))] = 
 			parData.map{ case (g, groupData) =>
@@ -118,7 +119,7 @@ object ReducedClu {
 				val colData: RDD[Double] = gData.mapPartitions(iter => iter.map(_.features.toArray(col)))
 				val ct = new ColumnTrainer(colData)        // TAKE TIME
 				val score = ct.kmeans(k, numIterations, initMode, seed)
-				LogHelper.log(score, s"score of group $g column $col")
+				// LogHelper.log(score, s"score of group $g column $col")
 				(col, score)
 			}
 			(g, colResults.toArray)
@@ -163,6 +164,7 @@ object ReducedClu {
 
 		/**
 		 * Join each group to restore the raw order.
+		 * (ID+label, vector)
 		 */
 		val assembled: RDD[LabeledPoint] = reducedData.reduce{ (rdd1, rdd2) =>
 			val joined = rdd1.join(rdd2)                   // TAKE TIME

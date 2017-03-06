@@ -5,6 +5,9 @@ import org.apache.spark.mllib.clustering.{KMeans, KMeansModel}
 import org.apache.spark.mllib.linalg.{Vectors, Vector}
 
 
+/**
+ * Clustering or other model like entropy.
+ */
  class ColumnTrainer(val data: RDD[Double]) {
 
  	def kmeans(k: Int, numIterations: Int, initMode: String, seed: Long): Double = {
