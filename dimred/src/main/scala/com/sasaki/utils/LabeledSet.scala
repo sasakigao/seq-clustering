@@ -1,4 +1,4 @@
-package com.sasaki.cluster
+package com.sasaki.utils
 
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.linalg.{Vectors}
@@ -13,9 +13,9 @@ case class LabeledSet(
 		val prediction: Int) {
 
 	// Transform LabeledSet to LabeledPoint.
-	def toLP = {
+	def toNLP = {
 		val labelMix = (id * 10 + label).toDouble
-		LabeledPoint(labelMix, Vectors.dense(vec))
+		new NewLabeledPoint(labelMix, Vectors.dense(vec))
 	}
 	
 }

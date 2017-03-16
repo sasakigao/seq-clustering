@@ -31,20 +31,18 @@ object ReducedClu {
 	val seed = 22L
 	// number of dimensions remained each level
 	val numDimKept = 5
-	val batch = 3 to 6
-
-    	// Reading path
-    	val isExpanded = false
-	val resPathSuffix = if (isExpanded) "expanded" else "raw"
-    	val basic = s"hdfs:///netease/ver2/seq2vec/916main/2to40/k5/${resPathSuffix}/unaligned"
-    	val fileName = "part-00000"
-	val dataHDFS = s"${basic}/${fileName}"
-	// Writing path
-	val redEventsHDFS = s"${basic}/redevents"
-	val redVecsHDFS = s"${basic}/redvecs"
 
 
 	def main(args: Array[String]) = {
+		val basePath = args(0)
+		val model = args(1)
+		require(model == "km" || model == "bkm", s"Illegal model ${model}")
+		val modelK = args(2).toInt
+		require(modelK > 0, s"Number of clusters must be positive but got ${modelK}")
+		// Writing path
+		val redEventsHDFS = s"${basePath}/events"
+		val redVecsHDFS = s"${basePath}/vecs"
+
 	  	val confSpark = new SparkConf().setAppName(appName)
 	  	confSpark.set("spark.scheduler.mode", "FAIR")    // important for multiuser parallelization
 	  	confSpark.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -54,13 +52,11 @@ object ReducedClu {
 		/**
 		 * Data files should be like "motion, score, motion, score, label"
 		 */
-		val rawData: RDD[Array[String]] = sc.textFile(dataHDFS)
+		val rawData: RDD[Array[String]] = sc.textFile(basePath)
 			.map(_.split(delimiter))
 		rawData.persist()
 		val rowLen = rawData.first.size
 		val numGroups = (rowLen - 1) / (2 * numTop)
-		// LogHelper.log(rowLen, "rowLen")
-		// LogHelper.log(numGroups, "numGroups")
 
 		/**
 		 * Group step. Separate the bulk data into parallel groups.
@@ -79,12 +75,6 @@ object ReducedClu {
 			(g, groupData)
 		}
 		rawData.unpersist()
-		// parData.foreach{ case (g, data) =>
-		// 	data.persist()
-		// 	LogHelper.log(s"Group $g counts ${data.count}.")
-		// 	LogHelper.log(data.first, s"sample of $g")
-		// 	data.unpersist()
-		// }
 
 		/**
 		 * Union step. (GroupId, (RDD, union))
@@ -96,8 +86,6 @@ object ReducedClu {
 				// Select a identifier
 				val union: Array[String] = groupData.flatMap(_.feaMap.keySet)
 					.distinct.collect
-				// LogHelper.log(union.size, s"union size of group $g")
-				// LogHelper.log(union.toList, s"union of group $g")
 				val unionBc = sc.broadcast(union)
 				val alignedData = groupData.mapPartitions{ iter =>
 					val rounds = (0 until numTop)
@@ -110,11 +98,10 @@ object ReducedClu {
 						vp
 					}
 				}.persist()
-				// LogHelper.log(alignedData.first, s"aligned features of group $g")
 				groupData.unpersist()
 				(g -> (alignedData, union))
 			}
-		// LogHelper.log(aligned.map(_._2._2.size).sum, s"total union size ")
+		LogHelper.log(aligned.map(_._2._2.size).sum, s"total union size ")
 
 		/**
 		 * Column clustering step. GroupID -> Arr(motion, score)
@@ -126,7 +113,7 @@ object ReducedClu {
 				val colData: RDD[Double] = gd.mapPartitions(iter => iter.map(_(motion)))
 				val ct = new ColumnTrainer(colData)        // TAKE TIME
 				val score = ct.kmeans(k, numIterations, initMode, seed)
-				// LogHelper.log(score, s"score of group $g column $motion")
+				LogHelper.log(score, s"score of group $g column $motion")
 				(motion, score)
 			}
 			(g, colResults.toArray)
@@ -139,12 +126,11 @@ object ReducedClu {
 		 */
 		val numLeft: Map[Int, Array[(String, Double)]] = cohesions.mapValues{ gRes => 
 			val resonable = gRes.filter(_._2 != 0)
-			// LogHelper.log(resonable.toList, s"resonable")
 			resonable.slice(0, numDimKept)
 		}
 
 		// 2nd saved vectors -- dimreduced motion id
-		// sc.parallelize(numLeft.mapValues(_.toList).toList, 1).saveAsTextFile(redEventsHDFS)
+		sc.parallelize(numLeft.mapValues(_.toList).toList, 1).saveAsTextFile(redEventsHDFS)
 
 		// Reduce dimensions and recover group order.
 		val reducedData: Array[RDD[(String, Array[Double])]] = aligned.map{ case (g, (gData, _)) => 
@@ -159,12 +145,6 @@ object ReducedClu {
 			(g, reduced)
 		}.toArray.sortBy(_._1).map(_._2)
 
-		// reducedData.foreach{ rdd =>
-		// 	val rddSample = rdd.first
-		// 	LogHelper.log(rddSample._1, "reducedData label")
-		// 	LogHelper.log(rddSample._2.toList, "reducedData vector")
-		// }
-
 		/**
 		 * Join each group to restore the raw order.
 		 * (ID+label, vector)
@@ -175,14 +155,10 @@ object ReducedClu {
 		}.mapPartitions(_.map(x => new NewLabeledPoint(x._1.toDouble, Vectors.dense(x._2))))
 		assembled.persist()
 
-		// val targetAfter = assembled.first
-		// LogHelper.log(targetAfter.label, "target after label")
-		// LogHelper.log(targetAfter.features.toArray.toList, "target after vector")
-
 		// 3rd saved vectors -- dimreduced vectors
-		// assembled.repartition(1).saveAsTextFile(redVecsHDFS)
+		assembled.repartition(1).saveAsTextFile(redVecsHDFS)
 		
-		TrainEva.input(assembled, batch)
+		TrainEva.input(assembled, basePath, model, modelK)
 
 		sc.stop()
 	}

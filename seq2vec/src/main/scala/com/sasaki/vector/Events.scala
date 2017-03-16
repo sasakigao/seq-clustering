@@ -16,23 +16,23 @@ import com.sasaki.utils._
 object Events {
 	val appName = "Seq2vec"
 
-    	// Raw data files to read
-	val levelDataHDFS = "hdfs:///netease/ver2/gen/916/level/"
-    	// Bad guys lookup file to read
-	val badguysLookupFile = "hdfs:///netease/ver2/datum/bg-main"
-
-	// Write to
-	val resPath = "hdfs:///netease/ver2/seq2vec/916new/"
-
 	// Event number in each level
 	val k = 5
+	val levelRange = (2 to 40)
 
-	/**
-	 * Give a sample number
-	 */
+    	// Level data of step 1
+	val levelDataHDFS = "hdfs:///netease/ver2/gen/916/level/"
+	val badguysLookupFile = "hdfs:///netease/ver2/datum/bg-main"
+	// Write to
+	val isExpanded = true
+	val resPathSuffix = if (isExpanded) "expanded" else "raw"
+	val resPath = s"hdfs:///netease/ver2/seq2vec/916main/${levelRange.head}to${levelRange.last}/k${k}/${resPathSuffix}/unaligned/"
+
+
 	def main(args : Array[String]) = {
 	  	val confSpark = new SparkConf().setAppName(appName)
 	  	confSpark.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+	  	confSpark.registerKryoClasses(Array(classOf[CsvObj]))
   		val sc = new SparkContext(confSpark)
   		val sqlContext = new SQLContext(sc)
 
@@ -44,42 +44,42 @@ object Events {
 			StructField("seqs", ArrayType(StringType), nullable = false) :: 
 			Nil)
 
-  		// id -> (grade, motion)
 		val levelsData = sqlContext.read.schema(schema).json(levelDataHDFS).rdd
-			.map{row => 
-				val motion = row.getSeq[String](2).map(_.split("@")(1))
-				(row.getString(0), (row.getString(1).toInt, motion))}
-			.persist()
+			.map{ row => 
+				val motionSer = row.getSeq[String](2).map( x =>
+					if (isExpanded) MoreEvents.expand(x) else x.split("@")(1))
+				(row.getString(0), (row.getString(1).toInt, motionSer))}
+  		// id -> (L1,L2,L3...)
 		val roleReduced = levelsData.combineByKey(
 			(v: (Int, Seq[String])) => Seq(v),
 			(c: Seq[(Int, Seq[String])], v: (Int, Seq[String])) => c :+ v,
 			(c1: Seq[(Int, Seq[String])], c2: Seq[(Int, Seq[String])]) => c1 ++ c2)
 		
-		// Filtered valid-span users
-		val spans: RDD[(String, Seq[(Int, Seq[String])])] = roleReduced.filter{ seq =>
-			val levelSeq = seq._2.map(_._1).toSet
-			(2 to 40).forall(levelSeq contains _)
+		// Filter and trim users to fixed level span
+		val spans: RDD[(String, Seq[(Int, Seq[String])])] = roleReduced.filter{ case (_, levSeq) =>
+			val levels = levSeq.map(_._1).toSet
+			levelRange.forall(levels contains _)
 		}.mapPartitions{ iter =>
 			iter.map{ role =>
-				val range = role._2.filter(_._1 <= 40)
-				(role._1, range)
+				val span = role._2.filter(_._1 <= levelRange.last)
+				(role._1, span)
 			}
 		}
 
-		// Count by level
+		// Counter of each motion bu level
 		import scala.collection.mutable.{Map => muMap}
 		val eventCounts: RDD[(String, Seq[(Int, muMap[String, Int])])] = spans.mapPartitions{ iter =>
-			iter.map{ role =>
-				val levels = role._2
-				val countLevels = levels.map{ level =>
-					val counts = level._2.groupBy(x=>x).mapValues(_.size)
-					(level._1, muMap(counts.toSeq: _*))
+			iter.map{ case (id, seq) =>
+				val countLevels = seq.map{ case (level, motions) =>
+					val counts = motions.groupBy(x=>x).mapValues(_.size)
+					(level, muMap(counts.toSeq: _*))
 				}
-				(role._1, countLevels)
+				(id, countLevels)
 			}
-		}
+		}.persist()
+		val numPlayer = eventCounts.count()
 
-		// Compute maximin of each level each motion.
+		// Compute maximin of each level of each motion.
 		import scala.collection.{Map => sMap}
 		val maximin: sMap[Int, muMap[String, (Int, Int)]] = eventCounts.flatMap(_._2)
 			.combineByKey(
@@ -92,10 +92,15 @@ object Events {
 					c2.foreach{case (k, v) => if (c1 contains k) c1(k) = c1(k) ++ c2(k) else c1 += (k -> v)}
 					c1
 				})
-			.mapValues(x => x.map(y => (y._1, (y._2.max, y._2.min))))
-			.collectAsMap
+			.mapValues{ events => 
+				events.map{ case (event, countSet) => 
+					val max = countSet.max
+					val min = if (countSet.size == numPlayer) countSet.min else 0
+					(event, (max, min))
+				}
+			}.collectAsMap
 
-		// Scale motion frequency by level to (0,100)
+		// Scale the frequency by level to (0,100)
 		val scaledCounts: RDD[(String, Seq[(Int, muMap[String, Double])])] = eventCounts.mapPartitions{ iter =>
 			iter.map{ roleStat =>
 				val statSeq = roleStat._2
@@ -103,7 +108,7 @@ object Events {
 					val level = levelStat._1
 					val scaledStat = levelStat._2.map{ case (motion, count) => 
 						val (max, min) = maximin(level)(motion)
-						val scaled = if (max == min) 1 else 1.0 * (count - min) / (max - min)
+						val scaled = if (max == min) 0 else 1.0 * (count - min) / (max - min)
 						(motion, 100 * scaled)
 					}
 					(levelStat._1, scaledStat)
@@ -112,11 +117,10 @@ object Events {
 			}
 		}
 
-		// Select the topk columns
+		// Select the top k columns, use 0 if cols less than k
 		val topkResult = scaledCounts.mapPartitions{ iter =>
-			iter.map{ role =>
-				val seq = role._2
-				val seqSlice = seq.sortBy(_._1).flatMap{ level =>
+			iter.map{ case (role, scaledCounter) =>
+				val seqSlice = scaledCounter.sortBy(_._1).flatMap{ level =>
 					val ordered = level._2.toSeq.sortBy(-_._2)
 					val len = ordered.size
 					if (len >= k) 
@@ -124,14 +128,14 @@ object Events {
 					else 
 						ordered ++ Array.range(0, k - len).map(_ => ("0", 0.0))
 				}
-				val label = if (badguys contains role._1) 1 else 0
-				seqSlice :+ (role._1 + label)
+				val label = if (badguys contains role) 1 else 0
+				new CsvObj(seqSlice, role + label)
 			}
 		}
 
+		// 1st saved vectors -- fixed unaligned vectors with motion id
 		topkResult.repartition(1).saveAsTextFile(resPath)
 
 		sc.stop()
   	}
-
 }
