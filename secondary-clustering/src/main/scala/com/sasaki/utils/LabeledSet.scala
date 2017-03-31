@@ -18,4 +18,7 @@ case class LabeledSet(
 		new NewLabeledPoint(labelMix, Vectors.dense(vec))
 	}
 	
+	override def toString = {
+		s"${id},${label},${prediction},${vec.mkString(",")}"
+	}
 }

@@ -18,7 +18,7 @@ class ClusterWithLP(val data: RDD[NewLabeledPoint]) {
 			RDD[LabeledSet] = {
 		val model = new KMeans().setK(k)
 			.setMaxIterations(numIter)
-			.setSeed(seed)
+			// .setSeed(seed)
 			.run(features)
 		val predAndLP = data.mapPartitions{ iter =>
 			iter.map{ lp =>
@@ -38,7 +38,7 @@ class ClusterWithLP(val data: RDD[NewLabeledPoint]) {
 			RDD[LabeledSet] = {
 		val model = new BisectingKMeans().setK(k)
 			.setMaxIterations(numIter)
-			.setSeed(seed)
+			// .setSeed(seed)
 			.setMinDivisibleClusterSize(minDivSize)
 			.run(features)
 		val predAndLP = data.mapPartitions{ iter =>

@@ -1,4 +1,4 @@
-package com.sasaki.train
+package com.sasaki.reduction
 
 import scala.collection.parallel.immutable._
 
@@ -9,46 +9,62 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{SQLContext, Row}
 import org.apache.spark.mllib.linalg.{Vectors, Vector}
 import org.apache.spark.mllib.regression.LabeledPoint
-import org.apache.spark.mllib.feature.StandardScaler
+
+import java.text.SimpleDateFormat
+import java.util.Date
 
 import com.sasaki.utils._
-import com.sasaki.cluster._
+import com.sasaki.trainer._
 
 
 /**
- * Stage 4 -- Cluster high-dim vectors using dimensionally reduction. 
+ * Stage 4 -- Dim reduction
  */
-object ReducedClu {
-	val appName = "Dimred clustering"
+object Dimred {
+	val appName = "Dimred"
 
 	val delimiter = ","
 	// Number of motions each level
 	val numTop = 5
 	// 5 seems better
-	val k = 5
+	// val k = 5
 	val numIterations = 20
 	val initMode = "k-means||"
 	val seed = 22L
 	// number of dimensions remained each level
-	val numDimKept = 5
-	val batch = 3 to 6
+	// val numDimKept = 5
 
     	// Reading path
-    	val isExpanded = false
-	val resPathSuffix = if (isExpanded) "expanded" else "raw"
-    	val basic = s"hdfs:///netease/ver2/seq2vec/916main/2to40/k5/${resPathSuffix}/unaligned"
-    	val fileName = "part-00000"
-	val dataHDFS = s"${basic}/${fileName}"
+    	// val isExpanded = false
+	// val resPathSuffix = if (isExpanded) "expanded" else "raw"
+    	// val basic = s"hdfs:///netease/ver2/seq2vec/916main/2to40/k5/${resPathSuffix}/unaligned"
+    	// val fileName = "part-00000"
+	// val dataHDFS = s"${basic}/${fileName}"
 	// Writing path
-	val redEventsHDFS = s"${basic}/redevents"
-	val redVecsHDFS = s"${basic}/redvecs"
+	// val redEventsHDFS = s"${basic}/redevents"
+	// val redVecsHDFS = s"${basic}/redvecs"
 
-
+	/**
+	 * @param basePath -- "hdfs:///netease/ver2/seq2vec/916main/2to40/k5/raw/unaligned"
+	 * @param k -- Int number that ColumnTrainer takes for clustering
+	 * @param numDimKept -- Number of left dimensions each level
+	 */
 	def main(args: Array[String]) = {
+		val basePath = args(0)
+		val k = args(1).toInt
+		require(k > 0, s"Number of clusters must be positive but got ${k}")
+		val numDimKept = args(2).toInt
+		require(numDimKept > 0, s"Number of kept dims must be positive but got ${numDimKept}")
+
+		val dataHDFS = s"${basePath}/part-00000"
+		val dateStr = getTime
+		val redEventsHDFS = s"${basePath}/${dateStr}/redevents/"
+		val redVecsHDFS = s"${basePath}/${dateStr}/redvecs/"
+
 	  	val confSpark = new SparkConf().setAppName(appName)
 	  	confSpark.set("spark.scheduler.mode", "FAIR")    // important for multiuser parallelization
 	  	confSpark.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-	  	confSpark.registerKryoClasses(Array(classOf[LabeledSet], classOf[NewLabeledPoint], classOf[VecPack]))
+	  	confSpark.registerKryoClasses(Array(classOf[NewLabeledPoint], classOf[VecPack]))
   		val sc = new SparkContext(confSpark)
 
 		/**
@@ -144,7 +160,7 @@ object ReducedClu {
 		}
 
 		// 2nd saved vectors -- dimreduced motion id
-		// sc.parallelize(numLeft.mapValues(_.toList).toList, 1).saveAsTextFile(redEventsHDFS)
+		sc.parallelize(numLeft.mapValues(_.toList).toList, 1).saveAsTextFile(redEventsHDFS)
 
 		// Reduce dimensions and recover group order.
 		val reducedData: Array[RDD[(String, Array[Double])]] = aligned.map{ case (g, (gData, _)) => 
@@ -180,10 +196,14 @@ object ReducedClu {
 		// LogHelper.log(targetAfter.features.toArray.toList, "target after vector")
 
 		// 3rd saved vectors -- dimreduced vectors
-		// assembled.repartition(1).saveAsTextFile(redVecsHDFS)
+		assembled.repartition(1).saveAsTextFile(redVecsHDFS)
 		
-		TrainEva.input(assembled, batch)
-
 		sc.stop()
 	}
+
+	def getTime = {
+  		val dt = new Date()
+     		val sdf = new SimpleDateFormat("MMdd-HHmm")
+     		sdf.format(dt)
+  	}
 }

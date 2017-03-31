@@ -24,9 +24,10 @@ object Events {
 	val levelDataHDFS = "hdfs:///netease/ver2/gen/916/level/"
 	val badguysLookupFile = "hdfs:///netease/ver2/datum/bg-main"
 	// Write to
-	val isExpanded = true
+	val isExpanded = false
 	val resPathSuffix = if (isExpanded) "expanded" else "raw"
-	val resPath = s"hdfs:///netease/ver2/seq2vec/916main/${levelRange.head}to${levelRange.last}/k${k}/${resPathSuffix}/unaligned/"
+	// val resPath = s"hdfs:///netease/ver2/seq2vec/916main/${levelRange.head}to${levelRange.last}/k${k}/${resPathSuffix}/unaligned/"
+	val resPath = "hdfs:///netease/ver2/compare/unnorm"
 
 
 	def main(args : Array[String]) = {
@@ -37,6 +38,7 @@ object Events {
   		val sqlContext = new SQLContext(sc)
 
   		val badguys = sc.textFile(badguysLookupFile, 1).collect.toSet
+  		val motions = sc.textFile("hdfs:///netease/ver2/datum/operations-user", 1).collect.map(_.split(",").head)
 
   		val schema = StructType(
     			StructField("role", StringType, nullable = false) ::
@@ -117,6 +119,18 @@ object Events {
 			}
 		}
 
+		// No dim-reduction, so aligned
+		// val topkResult = scaledCounts.mapPartitions{ iter =>
+		// 	iter.map{ case (role, scaledCounter) => 
+		// 		val seqSlice = scaledCounter.sortBy(_._1).flatMap{ level =>
+		// 			val seqCurr = level._2
+		// 			motions.map(x => seqCurr.getOrElse(x, 0.0))					
+		// 		}
+		// 		val label = if (badguys contains role) 1 else 0
+		// 		new CsvObj2(seqSlice, role + label)
+		// 	}
+		// }
+
 		// Select the top k columns, use 0 if cols less than k
 		val topkResult = scaledCounts.mapPartitions{ iter =>
 			iter.map{ case (role, scaledCounter) =>
@@ -134,7 +148,8 @@ object Events {
 		}
 
 		// 1st saved vectors -- fixed unaligned vectors with motion id
-		topkResult.repartition(1).saveAsTextFile(resPath)
+		topkResult.repartition(1).saveAsTextFile(s"${resPath}/events/")
+		// topkResult.repartition(1).saveAsTextFile("hdfs:///netease/temp/a")
 
 		sc.stop()
   	}
